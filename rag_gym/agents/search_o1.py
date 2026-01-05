@@ -1,3 +1,8 @@
+"""
+Searcho1Agent 实现。
+该 Agent 模仿 o1 的思考方式，在每一轮决策前，会先利用 RAGModule 对历史检索到的文档进行摘要/回答，
+然后再将“问题-回答”对作为历史背景，决定下一步是继续 Search 还是 Finish。
+"""
 import re
 import json
 import torch
@@ -5,8 +10,10 @@ from liquid import Template
 from liquid.template import BoundTemplate
 from rag_gym import State, LLMEngine, Action, BaseAgent
 
+# Searcho1 默认系统提示词
 search_o1_system_prompt = '''You are a helpful assistant. Your task is to think step-by-step and take an action to help solve a given question.'''
 
+# Searcho1 默认用户模板，强调基于历史回答（history）进行推理
 search_o1_user_template = Template('''### Information-seeking History
 {{history}}
 
@@ -34,6 +41,7 @@ Your output must include two sections:
     }
     ```''')
 
+# 截断后的模板，强制结束
 search_o1_truncated_user_template = Template('''### Information-seeking History
 {{history}}
 
@@ -54,8 +62,10 @@ Your output must include two sections:
     }
     ```''')
 
+# RAGModule 内部使用的系统提示词
 rag_system_prompt = "You are a helpful assistant tasked with answering a follow-up query using the relevant documents provided."
 
+# RAGModule 内部使用的用户模板
 rag_user_template = Template('''### Relevant Documents
 {{documents}}
 
@@ -68,6 +78,10 @@ rag_user_template = Template('''### Relevant Documents
 Answer the follow-up query succinctly, using only the information from the documents. When the documents do not provide sufficient information, explicitly point this out instead of making up facts. Do not include unrelated or excessive details in the response.''')
 
 class Searcho1Agent(BaseAgent):
+    """
+    Searcho1Agent 类。
+    与普通 ReAct 不同，它在内部维护了一个 RAGModule 来预处理检索到的文档。
+    """
     def __init__(
         self, 
         llm_name: str = "meta-llama/Meta-Llama-3.1-8B-Instruct", 
@@ -83,11 +97,19 @@ class Searcho1Agent(BaseAgent):
         train_mode: bool = False,
         **kwargs
     ):
+        """
+        初始化 Searcho1Agent。
+        Args:
+            rag: 是否启用 RAGModule。
+            rag_llm_name: RAGModule 使用的模型名称。
+        """
         super().__init__(llm_name, cache_dir, api, model_dtype, reward_llm_name, train_mode)
         self.agent_type = "search_o1"
         self.system_prompt = system_prompt if system_prompt is not None else search_o1_system_prompt
         self.user_template = user_template if user_template is not None else search_o1_user_template
         self.truncated_user_template = truncated_user_template if truncated_user_template is not None else search_o1_truncated_user_template
+        
+        # 如果启用 RAG，则实例化 RAGModule
         if rag:
             self.rag_llm_name = rag_llm_name
             self.rag_module = RAGModule(
@@ -111,17 +133,24 @@ class Searcho1Agent(BaseAgent):
         num_actions: int = 1,
         **kwargs
     ):
-        '''
-            Input: a State object, parameters for generating an action
-            Output: a list of Gap objects
-        '''
+        """
+        生成决策动作。
+        核心逻辑：
+        1. 遍历检索历史中的每一轮。
+        2. 调用 RAGModule 对该轮检索到的文档进行总结回答。
+        3. 将总结后的 "Query-Answer" 历史喂给决策模型。
+        """
         action_strings = []
         try:
             question = state.question
+            # 获取检索历史
             history = state.history.return_as_json(return_documents=True).copy()
+            
             if self.rag_module is None:
+                # 如果没有 RAGModule，退化为普通文档拼接格式
                 history = "\n\n".join([f"Query: {item['query']}\n" + "\n".join([f"Document [{idx}] (Title: {doc['title']}) {doc['content']}" for idx, doc in enumerate(item["documents"])]) for item in history])
             else:
+                # 对历史中的每一轮进行 RAG 总结
                 for i in range(len(history)):
                     query = history[i]["query"]
                     documents = history[i]["documents"]
@@ -135,7 +164,10 @@ class Searcho1Agent(BaseAgent):
                         num_return_sequences = 1,
                     )
                     history[i]["answer"] = answer
+                # 构造简化后的历史字符串
                 history = "\n\n".join([f"Query: {item['query']}\nAnswer: {item['answer']}" for item in history])
+            
+            # 决策模型生成下一步动作
             action_strings = self.llm.generate(
                 messages = [
                     {"role": "system", "content": self.system_prompt},
@@ -156,6 +188,9 @@ class Searcho1Agent(BaseAgent):
         return actions
     
     def post_process(self, action_str):
+        """
+        解析决策模型的输出。
+        """
         match = []
         try:
             match = re.findall(r'```json\s*({(?:[^`]|\`(?!``))*})', action_str.split("### Structured Output")[-1], re.DOTALL)
@@ -163,9 +198,11 @@ class Searcho1Agent(BaseAgent):
             output = eval(re.sub(r' //.*', '', match[-1].replace("null", "None"))) # remove comments
             query = output.get("query", output.get("generated_query", output.get("generated_queries", None)))
             answer = output.get("predicted_answer", None)
+            
             if type(query) == list:
                 query = query[0]
             query = str(query) if query is not None else query
+            
             if query:
                 action = Action(query=str(query), action_string=action_str)
             else:
@@ -175,7 +212,11 @@ class Searcho1Agent(BaseAgent):
         return action
 
     def apply_template(self, state, qa_cache):
+        """
+        应用模板，主要用于打分或重新推理。
+        """
         question = state.question
+        # 利用外部提供的 qa_cache (Query-Answer 缓存) 构造历史
         history = "\n\n".join([f"Query: {item['query']}\nAnswer: {qa_cache[item['query']]}" for item in state.history])
         # history = "\n\n".join([f"Query: {item['query']}\nAnswer: {qa_cache[item['query']][-1]}" for item in state.history])
         messages = [
@@ -185,6 +226,10 @@ class Searcho1Agent(BaseAgent):
         return messages
     
 class RAGModule:
+    """
+    RAGModule 类。
+    专门用于接收 Query 和一组 Documents，然后生成针对该 Query 的回答。
+    """
     def __init__(
         self, 
         llm_name: str = "meta-llama/Meta-Llama-3.1-8B-Instruct", 
@@ -195,6 +240,9 @@ class RAGModule:
         model_dtype: torch.dtype = torch.bfloat16,
         **kwargs
     ):
+        """
+        初始化 RAG 模块。
+        """
         self.llm_name = llm_name
         self.cache_dir = cache_dir
         self.api = api

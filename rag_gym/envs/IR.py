@@ -496,8 +496,32 @@ class DocExtracter:
                 with open(os.path.join(self.db_dir, "_".join([corpus_name, "id2text.json"])), 'w') as f:
                     json.dump(self.dict, f)
     
-    def extract(self, texts):
-        """
-        根据文档 ID 列表提取完整文档内容。
-        """
-        return [self.dict[item["id"]] for item in texts]
+        else:
+            if os.path.exists(os.path.join(self.db_dir, "_".join([corpus_name, "id2path.json"]))):
+                self.dict = json.load(open(os.path.join(self.db_dir, "_".join([corpus_name, "id2path.json"]))))
+            else:
+                self.dict = {}
+                for corpus in corpus_names[corpus_name]:
+                    for fname in tqdm.tqdm(sorted(os.listdir(os.path.join(self.db_dir, corpus, "chunk")))):
+                        if open(os.path.join(self.db_dir, corpus, "chunk", fname)).read().strip() == "":
+                            continue
+                        for i, line in enumerate(open(os.path.join(self.db_dir, corpus, "chunk", fname)).read().strip().split('\n')):
+                            item = json.loads(line)
+                            # assert item["id"] not in self.dict
+                            self.dict[item["id"]] = {"fpath": os.path.join(corpus, "chunk", fname), "index": i}
+                with open(os.path.join(self.db_dir, "_".join([corpus_name, "id2path.json"])), 'w') as f:
+                    json.dump(self.dict, f, indent=4)
+        print("Initialization finished!")
+    
+    def extract(self, ids):
+        if self.cache:
+            output = []
+            for i in ids:
+                item = self.dict[i] if type(i) == str else self.dict[i["id"]]
+                output.append(item)
+        else:
+            output = []
+            for i in ids:
+                item = self.dict[i] if type(i) == str else self.dict[i["id"]]
+                output.append(json.loads(open(os.path.join(self.db_dir, item["fpath"])).read().strip().split('\n')[item["index"]]))
+        return output
