@@ -44,7 +44,7 @@ class LLMEngine:
         # API 模式逻辑
         if api == True and "gpt" in self.llm_name.lower():
             import openai
-            from rag_gym import config_openai
+            from rag_gym.config import config_openai
             # 读取配置信息
             openai.api_type = config_openai.get("api_type") or openai.api_type or os.getenv("OPENAI_API_TYPE")
             openai.api_version = config_openai.get("api_version") or openai.api_version or os.getenv("OPENAI_API_VERSION")
@@ -65,15 +65,24 @@ class LLMEngine:
                 )
             self.model = None
         elif api == True:
-            # 其他 API 模式 (如 Azure AI 专用)
             import openai
-            from rag_gym import config_azure
-            self.model_name = "azureai"
-            self.client = openai.OpenAI(
-                base_url=config_azure["base_url"], 
-                api_key=config_azure["api_key"],
-                default_headers={"extra-parameters": "pass-through"}
-            )
+            from rag_gym.config import config_azure, config_local_llm
+            
+            # 优先检查是否匹配本地模型配置
+            if self.llm_name == config_local_llm.get("model_name"):
+                self.model_name = self.llm_name
+                self.client = openai.OpenAI(
+                    base_url=config_local_llm["base_url"], 
+                    api_key=config_local_llm["api_key"],
+                )
+            else:
+                # 其他 API 模式 (如 Azure AI 专用)
+                self.model_name = "azureai"
+                self.client = openai.OpenAI(
+                    base_url=config_azure["base_url"], 
+                    api_key=config_azure["api_key"],
+                    default_headers={"extra-parameters": "pass-through"}
+                )
             self.model = None
         else:
             # 本地加载模型模式

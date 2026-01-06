@@ -15,6 +15,6 @@ from rag_gym.agents.react import ReActAgent
 from rag_gym.agents.search_o1 import Searcho1Agent
 from rag_gym.agents.research import ReSearchAgent
 
-from rag_gym.config import config_openai, config_azure
+from rag_gym.config import config_openai, config_azure, config_local_llm, config_local_embedding
 
 # __all__ = ["make"]

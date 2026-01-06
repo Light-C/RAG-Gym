@@ -18,6 +18,40 @@ import json
 import torch
 import tqdm
 import numpy as np
+from openai import OpenAI
+from rag_gym.config import config_local_embedding
+
+class APIEmbeddingFunction:
+    """
+    通过 API 调用实现向量化的类，模拟 SentenceTransformer 的接口。
+    """
+    def __init__(self, model_name, base_url, api_key):
+        self.model_name = model_name
+        self.client = OpenAI(base_url=base_url, api_key=api_key)
+
+    def encode(self, texts, batch_size=128, **kwargs):
+        """
+        将文本列表转换为向量列表，支持自动分批处理。
+        """
+        if isinstance(texts, str):
+            texts = [texts]
+        
+        all_embeddings = []
+        for i in range(0, len(texts), batch_size):
+            batch_texts = texts[i:i + batch_size]
+            # 调用 OpenAI 兼容接口
+            response = self.client.embeddings.create(
+                input=batch_texts,
+                model=self.model_name
+            )
+            # 提取向量
+            batch_embeddings = [data.embedding for data in response.data]
+            all_embeddings.extend(batch_embeddings)
+            
+        return np.array(all_embeddings)
+
+    def eval(self):
+        pass
 
 # 语料库名称及其包含的子语料库映射
 corpus_names = {
@@ -37,6 +71,7 @@ retriever_names = {
     "SPECTER": ["allenai/specter"],
     "MedCPT": ["ncbi/MedCPT-Query-Encoder"],
     "BGE": ["BAAI/bge-base-en-v1.5"],
+    "BGE-M3": ["bge-m3"],
     "RRF-BGE": ["bm25", "BAAI/bge-base-en-v1.5"],
     "RRF-2": ["bm25", "ncbi/MedCPT-Query-Encoder"],
     "RRF-4": ["bm25", "facebook/contriever", "allenai/specter", "ncbi/MedCPT-Query-Encoder"]
@@ -97,7 +132,13 @@ def embed(chunk_dir, index_dir, model_name, **kwarg):
     """
     save_dir = os.path.join(index_dir, "embedding")
     
-    if "contriever" in model_name:
+    if model_name == config_local_embedding.get("model_name"):
+        model = APIEmbeddingFunction(
+            model_name=config_local_embedding["model_name"],
+            base_url=config_local_embedding["base_url"],
+            api_key=config_local_embedding["api_key"]
+        )
+    elif "contriever" in model_name:
         model = SentenceTransformer(model_name, device="cuda" if torch.cuda.is_available() else "cpu")
     else:
         model = CustomizeSentenceTransformer(model_name, device="cuda" if torch.cuda.is_available() else "cpu")
@@ -274,7 +315,13 @@ class Retriever:
                 self.metadatas = [json.loads(line) for line in open(os.path.join(self.index_dir, "metadatas.jsonl")).read().strip().split('\n')]            
             
             # 加载向量检索模型（Query Encoder）
-            if "contriever" in self.retriever_name.lower():
+            if self.retriever_name == config_local_embedding.get("model_name"):
+                self.embedding_function = APIEmbeddingFunction(
+                    model_name=config_local_embedding["model_name"],
+                    base_url=config_local_embedding["base_url"],
+                    api_key=config_local_embedding["api_key"]
+                )
+            elif "contriever" in self.retriever_name.lower():
                 self.embedding_function = SentenceTransformer(self.retriever_name, device="cuda" if torch.cuda.is_available() else "cpu")
             else:
                 self.embedding_function = CustomizeSentenceTransformer(self.retriever_name, device="cuda" if torch.cuda.is_available() else "cpu")
